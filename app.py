@@ -9,7 +9,7 @@ import numpy as np
 import os
 
 # --- Load model and scaler ---
-model = joblib.load("rf_model.pkl")
+model = joblib.load("model.pkl")
 scaler = joblib.load("scaler.pkl")
 
 # --- Page setup ---
