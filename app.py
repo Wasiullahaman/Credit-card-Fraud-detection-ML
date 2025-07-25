@@ -1,128 +1,144 @@
-# 📦 Streamlit App: Portfolio-Grade Credit Card Fraud Detection
-
 import streamlit as st
 import pandas as pd
 import joblib
-import plotly.express as px
-import shap
+import smtplib
+from email.message import EmailMessage
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import classification_report, confusion_matrix
 import numpy as np
-import os
 
-# --- Load model and scaler ---
-model = joblib.load("rf_model.pkl")
+# --------------------------
+# ✉️ Email Alert Function
+# --------------------------
+def send_fraud_alert(fraud_count):
+    SENDER_EMAIL = "amanwasiullah@gmail.com"
+    RECEIVER_EMAIL = "amanwasiullah@gmail.com"
+    APP_PASSWORD = "ealwngeehhaldfnr"  # ✅ Replace with your App Password
+
+    msg = EmailMessage()
+    msg['Subject'] = "🚨 Fraud Alert Detected!"
+    msg['From'] = SENDER_EMAIL
+    msg['To'] = RECEIVER_EMAIL
+    body = f"⚠️ {fraud_count} fraudulent transactions detected by your model."
+    msg.set_content(body)
+
+    try:
+        with smtpllib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+            smtp.login(SENDER_EMAIL, APP_PASSWORD)
+            smtp.send_message(msg)
+        st.success("📨 Email sent successfully.")
+    except Exception as e:
+        st.error(f"❌ Email failed: {e}")
+
+# --------------------------
+# 🔁 Load Model and Scaler
+# --------------------------
+model = joblib.load("model.pkl")
 scaler = joblib.load("scaler.pkl")
 
-# --- Page setup ---
-st.set_page_config(page_title="💳 Credit Card Fraud Detection Dashboard", layout="wide")
-st.title("🚨 Portfolio-Grade Credit Card Fraud Detection App")
+# --------------------------
+# 🌐 Streamlit UI
+# --------------------------
+st.set_page_config(page_title="💳 Fraud Detector", page_icon="🔍")
+st.title("💳 Credit Card Fraud Detection App")
 
-# --- Upload section ---
-uploaded_file = st.file_uploader("📂 Upload a transaction CSV file", type=["csv"])
+# Input type selector
+input_mode = st.radio("Choose input method:", ["📂 Upload CSV File", "✍️ Manual Input"])
 
-if uploaded_file:
-    df = pd.read_csv(uploaded_file)
+# --------------------------
+# 📂 CSV Upload Mode
+# --------------------------
+if input_mode == "📂 Upload CSV File":
+    uploaded_file = st.file_uploader("Upload a CSV file", type="csv")
 
-    # Show file info
-    st.sidebar.header("📁 File Info")
-    st.sidebar.write({
-        "Filename": uploaded_file.name,
-        "Size (KB)": round(len(uploaded_file.getvalue()) / 1024, 2),
-        "Rows": len(df)
-    })
+    if uploaded_file:
+        data = pd.read_csv(uploaded_file)
 
-    # Drop unneeded columns if they exist
-    for col in ['Class', 'Time']: 
-        if col in df.columns:
-            df = df.drop(columns=[col])
+        if 'Time' in data.columns:
+            data.drop(['Time'], axis=1, inplace=True)
 
-    # Scale Amount
-    if 'Amount' in df.columns:
-        df['Amount'] = scaler.transform(df[['Amount']])
+        if 'Amount' in data.columns and 'NormalizedAmount' not in data.columns:
+            data['NormalizedAmount'] = scaler.transform(data[['Amount']])
+            data.drop(['Amount'], axis=1, inplace=True)
 
-    # Predictions
-    y_pred = model.predict(df)
-    y_proba = model.predict_proba(df)[:, 1]
-
-    df['Fraud_Prediction'] = y_pred
-    df['Fraud_Score'] = y_proba.round(3)
-
-    def risk_action(score):
-        if score > 0.85:
-            return "🔴 Block"
-        elif score > 0.6:
-            return "🟠 Monitor"
+        if 'Class' in data.columns:
+            actual = data['Class']
+            data.drop('Class', axis=1, inplace=True)
         else:
-            return "🟢 Safe"
+            actual = None
 
-    df['Action'] = df['Fraud_Score'].apply(risk_action)
+        st.subheader("📊 Data Preview")
+        st.dataframe(data.head())
 
-    # --- Sidebar Stats ---
-    fraud_count = df['Fraud_Prediction'].sum()
-    total = len(df)
-    fraud_rate = round((fraud_count / total) * 100, 2)
+        if st.button("🔍 Predict Fraud"):
+            try:
+                expected_cols = ['V' + str(i) for i in range(1, 29)] + ['NormalizedAmount']
+                missing_cols = [col for col in expected_cols if col not in data.columns]
 
-    st.sidebar.header("📊 Fraud Stats")
-    st.sidebar.metric("Total", total)
-    st.sidebar.metric("Frauds", fraud_count)
-    st.sidebar.metric("Fraud Rate (%)", fraud_rate)
+                if missing_cols:
+                    st.error(f"❌ Missing columns: {missing_cols}")
+                else:
+                    data = data[expected_cols]
+                    predictions = model.predict(data)
+                    data['Prediction'] = predictions
 
-    # --- Data View Filter ---
-    st.subheader("🔍 View Transactions")
-    view = st.radio("Choose view:", ["All", "Only Fraud", "Only Non-Fraud"], horizontal=True)
-    view_df = df if view == "All" else df[df['Fraud_Prediction'] == int(view == "Only Fraud")]
-    st.dataframe(view_df.style.applymap(
-        lambda v: 'background-color: #ffcccc' if v == 1 else '', subset=['Fraud_Prediction']
-    ))
+                    st.session_state.fraud_count = int((predictions == 1).sum())
+                    st.session_state.legit_count = int((predictions == 0).sum())
 
-    # --- Visualizations ---
-    st.subheader("📊 Fraud Distribution")
-    pie_fig = px.pie(
-        names=["Non-Fraud", "Fraud"],
-        values=[total - fraud_count, fraud_count],
-        color_discrete_sequence=["green", "red"]
-    )
-    st.plotly_chart(pie_fig, use_container_width=True)
+                    st.success(f"✅ Prediction done. Fraud: {st.session_state.fraud_count}, Legit: {st.session_state.legit_count}")
 
-    st.subheader("📈 Fraud Amounts by Transaction")
-    frauds = df[df['Fraud_Prediction'] == 1]
-    if not frauds.empty:
-        frauds['Transaction_ID'] = frauds.index
-        fig_line = px.scatter(
-            frauds, x='Transaction_ID', y='Amount', color='Fraud_Score',
-            color_continuous_scale='reds', title="Fraud Amounts & Risk Scores"
-        )
-        st.plotly_chart(fig_line, use_container_width=True)
+                    # Charts
+                    fig1, ax1 = plt.subplots()
+                    ax1.pie([st.session_state.legit_count, st.session_state.fraud_count],
+                            labels=["Legit", "Fraud"],
+                            autopct='%1.1f%%',
+                            colors=["#66b3ff", "#ff6666"], startangle=90)
+                    ax1.axis('equal')
+                    st.pyplot(fig1)
 
-    # --- SHAP Explainability ---
-    st.subheader("🧠 SHAP Explainability")
-    try:
-        sample = df.drop(columns=['Fraud_Prediction', 'Fraud_Score', 'Action'])
-        explainer = shap.TreeExplainer(model)
-        shap_values = explainer.shap_values(sample[:100])
+                    st.bar_chart(pd.Series([st.session_state.legit_count, st.session_state.fraud_count], index=["Legit", "Fraud"]))
 
-        st.write("**Top Feature Contributions (first 100 rows)**")
-        shap.summary_plot(shap_values[1], sample[:100], plot_type="bar", show=False)
-        st.pyplot(bbox_inches='tight')
+                    if actual is not None:
+                        st.subheader("📊 Confusion Matrix")
+                        cm = confusion_matrix(actual, predictions)
+                        fig2, ax2 = plt.subplots()
+                        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                                    xticklabels=['Legit', 'Fraud'],
+                                    yticklabels=['Legit', 'Fraud'])
+                        st.pyplot(fig2)
 
-        st.write("**SHAP Force Plot (Row 0)**")
-        shap.initjs()
-        force_plot = shap.force_plot(explainer.expected_value[1], shap_values[1][0], sample.iloc[0], matplotlib=True)
-        st.pyplot(force_plot.figure)
+                        st.text("📈 Classification Report:")
+                        st.text(classification_report(actual, predictions, digits=4))
 
-    except Exception as e:
-        st.warning("SHAP explainability couldn't run. Reason: " + str(e))
+                    st.subheader("📋 Prediction Results")
+                    st.dataframe(data)
 
-    # --- Feedback Section ---
-    st.subheader("💬 Feedback")
-    feedback = st.radio("Was the prediction correct?", ["Yes", "No"])
-    if feedback == "No":
-        reason = st.text_input("Tell us what went wrong:")
-        if reason:
-            st.success("Thanks! Feedback saved (not really, this is a demo 😄)")
+            except Exception as e:
+                st.error(f"❌ Error: {e}")
 
-    # --- Download ---
-    st.subheader("⬇️ Download Results")
-    st.download_button(
-        "Download CSV", df.to_csv(index=False).encode('utf-8'),
-        file_name="fraud_predictions.csv", mime="text/csv"
-    )
+        if "fraud_count" in st.session_state and st.session_state.fraud_count > 0:
+            if st.button("📧 Send Email Alert"):
+                send_fraud_alert(st.session_state.fraud_count)
+
+# --------------------------
+# ✍️ Manual Input Mode
+# --------------------------
+else:
+    st.subheader("✍️ Enter Transaction Details Manually")
+
+    inputs = []
+    for i in range(1, 29):
+        val = st.number_input(f"Feature V{i}", value=0.0, step=0.01)
+        inputs.append(val)
+
+    amount = st.number_input("Transaction Amount (₹)", min_value=0.0, step=0.1)
+    norm_amount = scaler.transform(np.array([[amount]]))[0][0]
+    inputs.append(norm_amount)
+
+    if st.button("🧠 Predict This Transaction"):
+        try:
+            prediction = model.predict([inputs])[0]
+            st.success("✅ Prediction: FRAUD" if prediction == 1 else "✅ Prediction: LEGIT")
+        except Exception as e:
+            st.error(f"❌ Error: {e}")
